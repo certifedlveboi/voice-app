@@ -68,6 +68,7 @@ app.post('/webhook', async (req, res) => {
             type,
             search,
             id,
+            completed,
             conversation_id = 'default_conv',
             agent_id = 'default_agent',
             ...otherParams
@@ -75,7 +76,7 @@ app.post('/webhook', async (req, res) => {
         
         console.log(`Tool called: ${tool_name}`);
         console.log(`Conversation ID: ${conversation_id}`);
-        console.log(`Parameters:`, { content, title, date, time, type, search, id, ...otherParams });
+        console.log(`Parameters:`, { content, title, date, time, type, search, id, completed, ...otherParams });
 
         // Handle different tool calls
         let response;
@@ -92,6 +93,10 @@ app.post('/webhook', async (req, res) => {
                 response = await handleModifyNote({ id, title, content }, conversation_id);
                 break;
             
+            case 'complete_note':
+                response = await handleCompleteNote({ id, title, completed }, conversation_id);
+                break;
+            
             case 'delete_note':
                 response = await handleDeleteNote({ id, title }, conversation_id);
                 break;
@@ -103,7 +108,7 @@ app.post('/webhook', async (req, res) => {
             default:
                 response = {
                     success: false,
-                    error: `Unknown tool: ${tool_name}. Available tools: add_note, add_reminder, modify_note, delete_note, get_notes`
+                    error: `Unknown tool: ${tool_name}. Available tools: add_note, add_reminder, modify_note, complete_note, delete_note, get_notes`
                 };
         }
 
@@ -320,71 +325,128 @@ async function handleDeleteNote(parameters, conversationId) {
     try {
         const { id, title } = parameters;
         
+        if (!id && !title) {
+            return {
+                success: false,
+                error: 'Please provide either note ID or title to delete'
+            };
+        }
+        
+        let query = supabase.from('notes').delete().eq('user_id', DEFAULT_USER_ID);
+        
+        if (id) {
+            query = query.eq('id', id);
+        } else if (title) {
+            query = query.eq('title', title);
+        }
+        
+        const { data, error } = await query.select().single();
+        
+        if (error) {
+            console.error('Supabase error deleting note:', error);
+            
+            // Try deleting from reminders table if not found in notes
+            let reminderQuery = supabase.from('reminders').delete().eq('user_id', DEFAULT_USER_ID);
+            
+            if (id) {
+                reminderQuery = reminderQuery.eq('id', id);
+            } else if (title) {
+                reminderQuery = reminderQuery.eq('title', title);
+            }
+            
+            const { data: reminderData, error: reminderError } = await reminderQuery.select().single();
+            
+            if (reminderError) {
+                return {
+                    success: false,
+                    error: `Could not find note or reminder to delete. Error: ${error.message}`
+                };
+            }
+            
+            return {
+                success: true,
+                data: {
+                    message: `I've deleted the reminder titled "${reminderData.title}".`
+                }
+            };
+        }
+        
+        return {
+            success: true,
+            data: {
+                message: `I've deleted the note titled "${data.title}".`
+            }
+        };
+    } catch (error) {
+        console.error('Error in handleDeleteNote:', error);
+        return {
+            success: false,
+            error: error.message
+        };
+    }
+}
+
+async function handleCompleteNote(parameters, conversationId) {
+    try {
+        const { id, title, completed } = parameters;
+        
+        if (!id && !title) {
+            return {
+                success: false,
+                error: 'Please provide either note ID or title to complete'
+            };
+        }
+        
+        const isCompleted = completed === true || completed === 'true' || completed === '1';
+        
+        // First, try to find and update the note
         let query = supabase.from('notes').select('*').eq('user_id', DEFAULT_USER_ID);
         
         if (id) {
             query = query.eq('id', id);
         } else if (title) {
-            query = query.ilike('title', `%${title}%`);
-        } else {
+            query = query.eq('title', title);
+        }
+        
+        const { data: existingNotes, error: findError } = await query;
+        
+        if (findError || !existingNotes || existingNotes.length === 0) {
             return {
                 success: false,
-                error: "Please provide either an ID or title to delete the note"
+                error: 'Could not find the note to complete'
             };
         }
         
-        const { data: existingNotes, error: selectError } = await query;
+        const noteToUpdate = existingNotes[0];
         
-        if (selectError) {
-            console.error('Supabase error finding note:', selectError);
-            return {
-                success: false,
-                error: selectError.message
-            };
-        }
-        
-        if (!existingNotes || existingNotes.length === 0) {
-            return {
-                success: true,
-                data: {
-                    message: "I couldn't find that note to delete. Can you be more specific about which note you want to remove?",
-                    note: null
-                }
-            };
-        }
-        
-        const noteToDelete = existingNotes[0];
-        
+        // Update the note with completed status
         const { data, error } = await supabase
             .from('notes')
-            .delete()
-            .eq('id', noteToDelete.id)
+            .update({ 
+                completed: isCompleted,
+                completed_at: isCompleted ? new Date().toISOString() : null
+            })
+            .eq('id', noteToUpdate.id)
             .select()
             .single();
-            
+        
         if (error) {
-            console.error('Supabase error deleting note:', error);
+            console.error('Supabase error completing note:', error);
             return {
                 success: false,
                 error: error.message
             };
         }
         
-        // Get remaining notes count
-        const { count } = await supabase
-            .from('notes')
-            .select('*', { count: 'exact', head: true })
-            .eq('user_id', DEFAULT_USER_ID);
-        
+        const action = isCompleted ? 'completed' : 'uncompleted';
         return {
             success: true,
             data: {
-                message: `I've deleted the note titled "${data.title}". You now have ${count} notes remaining.`,
-                note: data
+                message: `I've marked the note "${data.title}" as ${action}.`
             }
         };
     } catch (error) {
-        console.error('Error in handleDeleteNote:', error);
+        console.error('Error in handleCompleteNote:', error);
         return {
             success: false,
             error: error.message
@@ -663,6 +725,109 @@ app.get('/view', (req, res) => {
     // Implementation of getView using Supabase
     // This function should return the HTML content for the view page
     // For example: res.send(html);
+});
+
+// New API endpoint for completing notes from the UI
+app.patch('/api/notes/:id/complete', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { completed } = req.body;
+        
+        const isCompleted = completed === true || completed === 'true';
+        
+        const { data, error } = await supabase
+            .from('notes')
+            .update({ 
+                completed: isCompleted,
+                completed_at: isCompleted ? new Date().toISOString() : null
+            })
+            .eq('id', id)
+            .eq('user_id', DEFAULT_USER_ID)
+            .select()
+            .single();
+        
+        if (error) {
+            console.error('Error updating note completion:', error);
+            return res.status(500).json({ error: error.message });
+        }
+        
+        if (!data) {
+            return res.status(404).json({ error: 'Note not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            data: data,
+            message: `Note ${isCompleted ? 'completed' : 'uncompleted'} successfully`
+        });
+    } catch (error) {
+        console.error('Error in /api/notes/:id/complete:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete note endpoint for UI
+app.delete('/api/notes/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const { data, error } = await supabase
+            .from('notes')
+            .delete()
+            .eq('id', id)
+            .eq('user_id', DEFAULT_USER_ID)
+            .select()
+            .single();
+        
+        if (error) {
+            console.error('Error deleting note:', error);
+            return res.status(500).json({ error: error.message });
+        }
+        
+        if (!data) {
+            return res.status(404).json({ error: 'Note not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Note deleted successfully'
+        });
+    } catch (error) {
+        console.error('Error in /api/notes/:id:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Delete reminder endpoint for UI
+app.delete('/api/reminders/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const { data, error } = await supabase
+            .from('reminders')
+            .delete()
+            .eq('id', id)
+            .eq('user_id', DEFAULT_USER_ID)
+            .select()
+            .single();
+        
+        if (error) {
+            console.error('Error deleting reminder:', error);
+            return res.status(500).json({ error: error.message });
+        }
+        
+        if (!data) {
+            return res.status(404).json({ error: 'Reminder not found' });
+        }
+        
+        res.json({ 
+            success: true, 
+            message: 'Reminder deleted successfully'
+        });
+    } catch (error) {
+        console.error('Error in /api/reminders/:id:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
 
 // Start server

@@ -4,26 +4,34 @@ import { Conversation } from 'https://cdn.jsdelivr.net/npm/@elevenlabs/client@la
 // Get DOM elements
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
-const statusIndicator = document.getElementById('statusIndicator');
+const statusBadge = document.getElementById('statusBadge');
+const statusIcon = document.getElementById('statusIcon');
 const statusText = document.getElementById('statusText');
-const agentStatus = document.getElementById('agentStatus');
-const agentMode = document.getElementById('agentMode');
 const logContent = document.getElementById('logContent');
 const agentIdInput = document.getElementById('agentId');
 const apiKeyInput = document.getElementById('apiKey');
+
+// Tab elements
+const tabs = document.querySelectorAll('.tab');
+const tabContents = document.querySelectorAll('.tab-content');
+
+// Notes and reminders elements
 const notesList = document.getElementById('notesList');
-const noteCount = document.getElementById('noteCount');
+const remindersList = document.getElementById('remindersList');
+const notesCount = document.getElementById('notesCount');
+const remindersCount = document.getElementById('remindersCount');
 
 let conversation = null;
 let isConnected = false;
 let mediaStream = null;
 let notes = [];
+let reminders = [];
 let refreshInterval = null;
 
 // Configuration
 const WEBHOOK_SERVER_URL = 'http://localhost:3000';
 
-// Load saved configuration and notes
+// Load saved configuration and data
 window.addEventListener('DOMContentLoaded', () => {
     const savedAgentId = localStorage.getItem('elevenlabs_agent_id');
     const savedApiKey = localStorage.getItem('elevenlabs_api_key');
@@ -31,11 +39,14 @@ window.addEventListener('DOMContentLoaded', () => {
     if (savedAgentId) agentIdInput.value = savedAgentId;
     if (savedApiKey) apiKeyInput.value = savedApiKey;
     
-    // Load notes from Supabase via webhook server
-    loadNotesFromServer();
+    // Initialize tab functionality
+    initializeTabs();
     
-    // Set up auto-refresh every 10 seconds when connected
-    refreshInterval = setInterval(loadNotesFromServer, 10000);
+    // Load notes and reminders from server
+    loadDataFromServer();
+    
+    // Set up auto-refresh every 10 seconds
+    refreshInterval = setInterval(loadDataFromServer, 10000);
 });
 
 // Save configuration when changed
@@ -51,11 +62,32 @@ apiKeyInput.addEventListener('change', () => {
     }
 });
 
+// Tab functionality
+function initializeTabs() {
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const targetTab = tab.dataset.tab;
+            switchTab(targetTab);
+        });
+    });
+}
+
+function switchTab(targetTab) {
+    // Update tab buttons
+    tabs.forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.tab === targetTab);
+    });
+    
+    // Update tab content
+    tabContents.forEach(content => {
+        content.classList.toggle('active', content.id === `${targetTab}-tab`);
+    });
+}
+
 // Send contextual update to agent
 function sendContextualUpdate(message) {
     if (conversation && isConnected) {
         try {
-            // Send a contextual update to inform the agent about the action
             conversation.sendContextualUpdate({
                 text: message
             });
@@ -65,152 +97,224 @@ function sendContextualUpdate(message) {
     }
 }
 
-// Notes Management Functions - Updated to use Supabase
-async function loadNotesFromServer() {
+// Data loading functions
+async function loadDataFromServer() {
     try {
-        console.log('🔄 Loading notes from server...');
+        console.log('🔄 Loading data from server...');
         const response = await fetch(`${WEBHOOK_SERVER_URL}/api/notes-and-reminders`);
-        console.log('📡 API Response status:', response.status);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
         
         const result = await response.json();
-        console.log('📦 API Response data:', result);
+        console.log('📦 API Response:', result);
         
         if (result.success) {
-            // Convert to the format the UI expects
-            notes = [];
+            notes = result.data.notes || [];
+            reminders = result.data.reminders || [];
             
-            // Add notes
-            if (result.data.notes) {
-                console.log('📝 Processing', result.data.notes.length, 'notes');
-                result.data.notes.forEach(note => {
-                    notes.push({
-                        id: note.id,
-                        content: note.content || '',
-                        title: note.title || 'Untitled Note',
-                        type: 'note',
-                        timestamp: note.created_at,
-                        isNew: false
-                    });
-                });
-            }
+            console.log('📝 Loaded notes:', notes.length);
+            console.log('⏰ Loaded reminders:', reminders.length);
             
-            // Add reminders
-            if (result.data.reminders) {
-                console.log('⏰ Processing', result.data.reminders.length, 'reminders');
-                result.data.reminders.forEach(reminder => {
-                    notes.push({
-                        id: reminder.id,
-                        content: `${reminder.notes || ''} ${reminder.date ? `(${new Date(reminder.date).toLocaleDateString()})` : ''}`,
-                        title: reminder.title || 'Untitled Reminder',
-                        type: 'reminder',
-                        timestamp: reminder.date,
-                        isNew: false
-                    });
-                });
-            }
-            
-            console.log('🎯 Total notes array length:', notes.length);
-            console.log('📋 Notes array contents:', notes);
             renderNotes();
+            renderReminders();
         } else {
-            console.error('❌ Failed to load notes:', result.error);
+            console.error('❌ Failed to load data:', result.error);
         }
     } catch (error) {
-        console.error('💥 Error loading notes from server:', error);
-        // Fallback to localStorage if server is not available
-        loadNotes();
+        console.error('💥 Error loading data from server:', error);
+        // Could implement fallback to localStorage here
     }
 }
 
-function loadNotes() {
-    // Fallback to localStorage
-    const savedNotes = localStorage.getItem('voice_assistant_notes');
-    if (savedNotes) {
-        notes = JSON.parse(savedNotes);
-        renderNotes();
-    }
-}
-
-function saveNotes() {
-    // Keep localStorage as backup
-    localStorage.setItem('voice_assistant_notes', JSON.stringify(notes));
-    renderNotes();
-}
-
-function addNote(content, type = 'note') {
-    const note = {
-        id: Date.now(),
-        content: content,
-        type: type,
-        timestamp: new Date().toISOString(),
-        isNew: true
-    };
-    notes.unshift(note);
-    saveNotes();
-    
-    // Refresh from server after a short delay to get the actual saved note
-    setTimeout(() => {
-        loadNotesFromServer();
-    }, 1000);
-    
-    // Remove the 'new' class after animation
-    setTimeout(() => {
-        const noteElement = document.querySelector(`[data-note-id="${note.id}"]`);
-        if (noteElement) {
-            noteElement.classList.remove('new');
+// Note completion functionality
+async function toggleNoteCompletion(noteId, completed) {
+    try {
+        const response = await fetch(`${WEBHOOK_SERVER_URL}/api/notes/${noteId}/complete`, {
+            method: 'PATCH',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ completed: completed })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
         }
-    }, 500);
-    
-    return note;
-}
-
-function deleteNote(noteId) {
-    const note = notes.find(n => n.id === noteId);
-    if (note) {
-        notes = notes.filter(n => n.id !== noteId);
-        saveNotes();
-        // Inform the agent about the deletion
-        sendContextualUpdate(`User deleted ${note.type}: "${note.content}"`);
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Update local state
+            const note = notes.find(n => n.id === noteId);
+            if (note) {
+                note.completed = completed;
+                note.completed_at = completed ? new Date().toISOString() : null;
+            }
+            
+            // Re-render notes
+            renderNotes();
+            
+            // Inform agent
+            const action = completed ? 'completed' : 'uncompleted';
+            sendContextualUpdate(`User marked note "${note?.title || 'Unknown'}" as ${action}`);
+        }
+    } catch (error) {
+        console.error('Error toggling note completion:', error);
     }
 }
 
-function clearAllNotes() {
-    const count = notes.length;
-    notes = [];
-    saveNotes();
-    // Inform the agent
-    sendContextualUpdate(`User cleared all ${count} notes and reminders`);
+// Delete functions
+async function deleteNote(noteId, type = 'note') {
+    try {
+        const endpoint = type === 'note' ? 'notes' : 'reminders';
+        const response = await fetch(`${WEBHOOK_SERVER_URL}/api/${endpoint}/${noteId}`, {
+            method: 'DELETE'
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            // Remove from local state
+            if (type === 'note') {
+                notes = notes.filter(n => n.id !== noteId);
+                renderNotes();
+            } else {
+                reminders = reminders.filter(r => r.id !== noteId);
+                renderReminders();
+            }
+            
+            // Inform agent
+            sendContextualUpdate(`User deleted ${type}: "${result.title || 'item'}"`);
+        }
+    } catch (error) {
+        console.error(`Error deleting ${type}:`, error);
+    }
 }
 
+// Render functions
 function renderNotes() {
-    console.log('🎨 Rendering notes, current count:', notes.length);
-    noteCount.textContent = `${notes.length} item${notes.length !== 1 ? 's' : ''}`;
+    console.log('🎨 Rendering notes, count:', notes.length);
+    notesCount.textContent = `${notes.length} note${notes.length !== 1 ? 's' : ''}`;
     
     if (notes.length === 0) {
-        console.log('📄 No notes to display, showing empty state');
         notesList.innerHTML = `
-            <div class="empty-notes">
-                No notes yet. Try saying "Add a note" or "Create a reminder"!
+            <div class="empty-state">
+                <i class="fas fa-sticky-note"></i>
+                <h3>No notes yet</h3>
+                <p>Say "Add a note" to get started!</p>
             </div>
         `;
         return;
     }
     
-    console.log('📋 Rendering', notes.length, 'notes in the UI');
-    notesList.innerHTML = notes.map(note => `
-        <div class="note-item ${note.type === 'reminder' ? 'reminder' : ''} ${note.isNew ? 'new' : ''}" data-note-id="${note.id}">
-            <button class="delete-note" onclick="window.deleteNoteHandler(${note.id})" title="Delete note">×</button>
-            <div class="note-content">${escapeHtml(note.content)}</div>
-            <div class="note-meta">
-                <span class="note-type ${note.type === 'reminder' ? 'reminder' : ''}">${note.type}</span>
-                <span>${formatDate(note.timestamp)}</span>
-            </div>
-        </div>
-    `).join('');
-    console.log('✅ Notes rendered successfully');
+    notesList.innerHTML = notes.map(note => createNoteHTML(note)).join('');
+    
+    // Add event listeners for checkboxes and delete buttons
+    notesList.querySelectorAll('.checkbox').forEach(checkbox => {
+        checkbox.addEventListener('click', (e) => {
+            const noteId = parseInt(e.target.closest('.item').dataset.noteId);
+            const isCompleted = e.target.classList.contains('checked');
+            toggleNoteCompletion(noteId, !isCompleted);
+        });
+    });
+    
+    notesList.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const noteId = parseInt(e.target.closest('.item').dataset.noteId);
+            if (confirm('Are you sure you want to delete this note?')) {
+                deleteNote(noteId, 'note');
+            }
+        });
+    });
 }
 
-// Helper functions
+function renderReminders() {
+    console.log('🎨 Rendering reminders, count:', reminders.length);
+    remindersCount.textContent = `${reminders.length} reminder${reminders.length !== 1 ? 's' : ''}`;
+    
+    if (reminders.length === 0) {
+        remindersList.innerHTML = `
+            <div class="empty-state">
+                <i class="fas fa-clock"></i>
+                <h3>No reminders yet</h3>
+                <p>Say "Create a reminder" to get started!</p>
+            </div>
+        `;
+        return;
+    }
+    
+    remindersList.innerHTML = reminders.map(reminder => createReminderHTML(reminder)).join('');
+    
+    // Add event listeners for delete buttons
+    remindersList.querySelectorAll('.delete-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            const reminderId = parseInt(e.target.closest('.item').dataset.reminderId);
+            if (confirm('Are you sure you want to delete this reminder?')) {
+                deleteNote(reminderId, 'reminder');
+            }
+        });
+    });
+}
+
+function createNoteHTML(note) {
+    const isCompleted = note.completed || false;
+    const completedClass = isCompleted ? 'completed' : '';
+    const checkedClass = isCompleted ? 'checked' : '';
+    
+    return `
+        <div class="item ${completedClass}" data-note-id="${note.id}">
+            <div class="item-header">
+                <div class="checkbox ${checkedClass}">
+                    ${isCompleted ? '<i class="fas fa-check"></i>' : ''}
+                </div>
+                <div class="item-title">${escapeHtml(note.title || 'Untitled Note')}</div>
+                <div class="item-actions">
+                    <button class="action-btn delete-btn" title="Delete note">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="item-content">${escapeHtml(note.content || '')}</div>
+            <div class="item-meta">
+                <span class="item-type">note</span>
+                <span class="item-date">${formatDate(note.created_at)}</span>
+            </div>
+        </div>
+    `;
+}
+
+function createReminderHTML(reminder) {
+    const reminderDate = reminder.date ? new Date(reminder.date) : null;
+    const isUpcoming = reminderDate && reminderDate > new Date();
+    
+    return `
+        <div class="item" data-reminder-id="${reminder.id}">
+            <div class="item-header">
+                <div class="item-title">${escapeHtml(reminder.title || 'Untitled Reminder')}</div>
+                <div class="item-actions">
+                    <button class="action-btn delete-btn" title="Delete reminder">
+                        <i class="fas fa-trash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="item-content">${escapeHtml(reminder.notes || '')}</div>
+            <div class="item-meta">
+                <span class="item-type reminder">reminder</span>
+                <span class="item-date ${isUpcoming ? 'reminder-date' : ''}">
+                    ${reminderDate ? formatDate(reminder.date) : 'No date set'}
+                </span>
+            </div>
+        </div>
+    `;
+}
+
+// Utility functions
 function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
@@ -218,261 +322,179 @@ function escapeHtml(text) {
 }
 
 function formatDate(timestamp) {
+    if (!timestamp) return 'Unknown date';
+    
     const date = new Date(timestamp);
     const now = new Date();
-    const diffMs = now - date;
-    const diffMins = Math.floor(diffMs / 60000);
+    const diffTime = now - date;
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     
-    if (diffMins < 1) return 'Just now';
-    if (diffMins < 60) return `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
-    
-    const diffHours = Math.floor(diffMins / 60);
-    if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-    
-    return date.toLocaleDateString();
+    if (diffDays === 0) {
+        return 'Today ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } else if (diffDays === 1) {
+        return 'Yesterday';
+    } else if (diffDays < 7) {
+        return `${diffDays} days ago`;
+    } else {
+        return date.toLocaleDateString([], { 
+            month: 'short', 
+            day: 'numeric',
+            year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined
+        });
+    }
 }
 
-// Global delete handler
-window.deleteNoteHandler = function(noteId) {
-    deleteNote(noteId);
-};
-
-// Process voice commands
-function processVoiceCommand(transcript) {
-    const lowerTranscript = transcript.toLowerCase();
-    
-    // Add note command
-    if (lowerTranscript.includes('add a note') || lowerTranscript.includes('add note')) {
-        const noteMatch = transcript.match(/add (?:a )?note:?\s*(.+)/i);
-        if (noteMatch && noteMatch[1]) {
-            const note = addNote(noteMatch[1].trim(), 'note');
-            // Send contextual update to agent
-            sendContextualUpdate(`Successfully added note: "${note.content}". User now has ${notes.length} total notes.`);
-            return `I've added your note: "${note.content}"`;
-        }
-        return "What would you like me to note down?";
-    }
-    
-    // Create reminder command
-    if (lowerTranscript.includes('create a reminder') || lowerTranscript.includes('create reminder') || lowerTranscript.includes('remind me')) {
-        const reminderMatch = transcript.match(/(?:create (?:a )?reminder|remind me):?\s*(.+)/i);
-        if (reminderMatch && reminderMatch[1]) {
-            const reminder = addNote(reminderMatch[1].trim(), 'reminder');
-            // Send contextual update to agent
-            sendContextualUpdate(`Successfully added reminder: "${reminder.content}". User now has ${notes.filter(n => n.type === 'reminder').length} reminders.`);
-            return `I've created your reminder: "${reminder.content}"`;
-        }
-        return "What would you like me to remind you about?";
-    }
-    
-    // Read notes command
-    if (lowerTranscript.includes('read my notes') || lowerTranscript.includes('read notes') || lowerTranscript.includes('what are my notes')) {
-        const noteItems = notes.filter(n => n.type === 'note');
-        if (noteItems.length === 0) {
-            sendContextualUpdate('User requested to read notes but has none.');
-            return "You don't have any notes yet.";
-        }
-        const notesList = noteItems.slice(0, 5).map((n, i) => `${i + 1}. ${n.content}`).join('. ');
-        sendContextualUpdate(`User has ${noteItems.length} notes. Reading the first ${Math.min(5, noteItems.length)}.`);
-        return `Here are your notes: ${notesList}`;
-    }
-    
-    // Read reminders command
-    if (lowerTranscript.includes('read my reminders') || lowerTranscript.includes('read reminders') || lowerTranscript.includes('what are my reminders')) {
-        const reminderItems = notes.filter(n => n.type === 'reminder');
-        if (reminderItems.length === 0) {
-            sendContextualUpdate('User requested to read reminders but has none.');
-            return "You don't have any reminders yet.";
-        }
-        const remindersList = reminderItems.slice(0, 5).map((r, i) => `${i + 1}. ${r.content}`).join('. ');
-        sendContextualUpdate(`User has ${reminderItems.length} reminders. Reading the first ${Math.min(5, reminderItems.length)}.`);
-        return `Here are your reminders: ${remindersList}`;
-    }
-    
-    // Clear all notes command
-    if (lowerTranscript.includes('clear all notes') || lowerTranscript.includes('delete all notes')) {
-        if (notes.length === 0) {
-            sendContextualUpdate('User tried to clear notes but had none.');
-            return "You don't have any notes to clear.";
-        }
-        const count = notes.length;
-        clearAllNotes();
-        return `I've cleared all ${count} notes and reminders.`;
-    }
-    
-    // Delete last note command
-    if (lowerTranscript.includes('delete the last note') || lowerTranscript.includes('delete last note')) {
-        if (notes.length === 0) {
-            sendContextualUpdate('User tried to delete last note but had none.');
-            return "You don't have any notes to delete.";
-        }
-        const lastNote = notes[0];
-        deleteNote(lastNote.id);
-        return `I've deleted your last ${lastNote.type}: "${lastNote.content}"`;
-    }
-    
-    return null;
-}
-
-// Add log entry to conversation history
+// Conversation logging
 function addLogEntry(text, type) {
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${type}`;
-    entry.textContent = `${type === 'user' ? 'You' : 'Agent'}: ${text}`;
-    logContent.appendChild(entry);
+    const logEntry = document.createElement('div');
+    logEntry.className = `log-entry ${type}`;
+    logEntry.textContent = text;
+    
+    // Clear empty state if it exists
+    const emptyState = logContent.querySelector('.empty-state');
+    if (emptyState) {
+        emptyState.remove();
+    }
+    
+    logContent.appendChild(logEntry);
     logContent.scrollTop = logContent.scrollHeight;
 }
 
-// Update UI status
+// Status management
 function updateStatus(connected, mode = 'listening') {
     isConnected = connected;
     
+    statusBadge.className = 'status-badge';
+    statusIcon.className = 'fas fa-circle';
+    
     if (connected) {
-        statusIndicator.className = `status-indicator ${mode === 'speaking' ? 'speaking' : 'connected'}`;
-        statusText.textContent = 'Connected';
-        agentStatus.style.display = 'block';
-        agentMode.textContent = mode;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
+        if (mode === 'speaking') {
+            statusBadge.classList.add('speaking');
+            statusIcon.className = 'fas fa-microphone';
+            statusText.textContent = 'Speaking';
+        } else {
+            statusBadge.classList.add('connected');
+            statusIcon.className = 'fas fa-microphone';
+            statusText.textContent = 'Listening';
+        }
     } else {
-        statusIndicator.className = 'status-indicator disconnected';
         statusText.textContent = 'Disconnected';
-        agentStatus.style.display = 'none';
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
     }
+    
+    startBtn.disabled = connected;
+    stopBtn.disabled = !connected;
 }
 
-// Start conversation
+// Voice conversation management
 async function startConversation() {
-    const agentId = agentIdInput.value.trim();
-    const apiKey = apiKeyInput.value.trim();
-    
-    if (!agentId) {
-        alert('Please enter your Agent ID');
-        return;
-    }
-    
     try {
-        // Request microphone permission with echo cancellation
-        mediaStream = await navigator.mediaDevices.getUserMedia({ 
-            audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-                sampleRate: 16000
-            } 
-        });
+        const agentId = agentIdInput.value.trim();
+        const apiKey = apiKeyInput.value.trim();
         
-        // Clear previous conversation log
-        logContent.innerHTML = '';
-        addLogEntry('Starting conversation...', 'agent');
-        addLogEntry('🎧 Tip: Use headphones to avoid echo/feedback issues!', 'agent');
-        addLogEntry('📝 I can help you manage notes and reminders. Just ask!', 'agent');
+        if (!agentId) {
+            alert('Please enter your Agent ID');
+            return;
+        }
         
-        // Configuration options
-        const options = {
+        console.log('Starting conversation with agent:', agentId);
+        
+        // Request microphone permission
+        try {
+            mediaStream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                } 
+            });
+            console.log('Microphone access granted');
+        } catch (error) {
+            console.error('Microphone access denied:', error);
+            alert('Microphone access is required for voice chat. Please allow microphone access and try again.');
+            return;
+        }
+        
+        // Initialize conversation
+        const config = {
             agentId: agentId,
-            // Add audio settings to prevent echo
-            audioConfig: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
-            },
             onConnect: () => {
-                console.log('Connected to ElevenLabs');
-                updateStatus(true);
-                addLogEntry('Connected! You can start speaking.', 'agent');
-                
-                // Send initial context about current notes
-                const noteCount = notes.filter(n => n.type === 'note').length;
-                const reminderCount = notes.filter(n => n.type === 'reminder').length;
-                sendContextualUpdate(`User has ${noteCount} notes and ${reminderCount} reminders stored.`);
+                console.log('Connected to agent');
+                updateStatus(true, 'listening');
+                addLogEntry('Connected to voice assistant', 'agent');
             },
-            onDisconnect: (code, reason) => {
-                console.log('Disconnected:', code, reason);
+            onDisconnect: () => {
+                console.log('Disconnected from agent');
                 updateStatus(false);
-                addLogEntry('Conversation ended.', 'agent');
-                // Clean up media stream
-                if (mediaStream) {
-                    mediaStream.getTracks().forEach(track => track.stop());
-                    mediaStream = null;
-                }
-            },
-            onMessage: (message) => {
-                console.log('Message received:', message);
+                addLogEntry('Disconnected from voice assistant', 'agent');
             },
             onError: (error) => {
-                console.error('Error:', error);
-                addLogEntry(`Error: ${error.message || 'Connection failed'}`, 'agent');
+                console.error('Conversation error:', error);
                 updateStatus(false);
-                // Clean up media stream on error
-                if (mediaStream) {
-                    mediaStream.getTracks().forEach(track => track.stop());
-                    mediaStream = null;
-                }
+                addLogEntry(`Error: ${error.message}`, 'agent');
             },
-            onModeChange: (mode) => {
-                console.log('Mode changed:', mode);
-                updateStatus(true, mode.mode);
+            onMessage: (message) => {
+                console.log('Agent message:', message);
+                addLogEntry(message.text, 'agent');
+                
+                // Check if this might be a notification about notes/reminders
+                if (message.text.includes('note') || message.text.includes('reminder')) {
+                    // Refresh data after a short delay
+                    setTimeout(() => {
+                        loadDataFromServer();
+                    }, 1000);
+                }
             },
             onUserTranscript: (transcript) => {
-                if (transcript && transcript.trim()) {
-                    addLogEntry(transcript, 'user');
-                    
-                    // Process voice commands locally
-                    const commandResponse = processVoiceCommand(transcript);
-                    if (commandResponse) {
-                        // Show local response but don't speak it - let the agent respond naturally
-                        console.log('Command processed locally:', commandResponse);
-                    }
-                }
+                console.log('User transcript:', transcript);
+                addLogEntry(transcript, 'user');
             },
-            onAgentResponse: (response) => {
-                if (response && response.trim()) {
-                    addLogEntry(response, 'agent');
-                }
+            onAgentModeChange: (mode) => {
+                console.log('Agent mode changed:', mode);
+                updateStatus(true, mode === 'speaking' ? 'speaking' : 'listening');
             }
         };
         
-        // If API key is provided, we'll need to get a signed URL
         if (apiKey) {
-            // For private agents, you would typically get a signed URL from your backend
-            // For this demo, we'll use the API key directly (note: in production, never expose API keys in frontend)
-            console.log('Using API key for private agent');
-            // Note: The ElevenLabs SDK handles authentication internally
+            config.apiKey = apiKey;
         }
         
-        // Start the conversation session
-        conversation = await Conversation.startSession(options);
+        conversation = new Conversation(config);
+        await conversation.startSession({ audio: true });
+        
+        console.log('Conversation started successfully');
         
     } catch (error) {
         console.error('Failed to start conversation:', error);
-        alert(`Failed to start conversation: ${error.message}`);
         updateStatus(false);
-        // Clean up media stream on error
-        if (mediaStream) {
-            mediaStream.getTracks().forEach(track => track.stop());
-            mediaStream = null;
+        
+        let errorMessage = 'Failed to start conversation. ';
+        if (error.message.includes('401')) {
+            errorMessage += 'Please check your Agent ID and API Key.';
+        } else if (error.message.includes('network') || error.message.includes('fetch')) {
+            errorMessage += 'Please check your internet connection.';
+        } else {
+            errorMessage += error.message;
         }
+        
+        alert(errorMessage);
     }
 }
 
-// Stop conversation
 async function stopConversation() {
     if (conversation) {
         try {
             await conversation.endSession();
             conversation = null;
+            console.log('Conversation ended');
         } catch (error) {
-            console.error('Error stopping conversation:', error);
+            console.error('Error ending conversation:', error);
         }
     }
     
-    // Clean up media stream
     if (mediaStream) {
         mediaStream.getTracks().forEach(track => track.stop());
         mediaStream = null;
+        console.log('Microphone stream stopped');
     }
     
     updateStatus(false);
@@ -484,10 +506,18 @@ stopBtn.addEventListener('click', stopConversation);
 
 // Handle page unload
 window.addEventListener('beforeunload', () => {
-    if (conversation) {
-        conversation.endSession();
+    if (refreshInterval) {
+        clearInterval(refreshInterval);
     }
+    
+    if (conversation) {
+        conversation.endSession().catch(console.error);
+    }
+    
     if (mediaStream) {
         mediaStream.getTracks().forEach(track => track.stop());
     }
-}); 
+});
+
+// Initialize status
+updateStatus(false); 
